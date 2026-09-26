@@ -1,3 +1,5 @@
-__pycache__/
-*.py[cod]
-.git/
+.git
+__pycache__
+*.pyc
+.venv
+sources

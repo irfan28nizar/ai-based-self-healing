@@ -1,20 +1,24 @@
 services:
-  service-a:
-    build:
-      context: ./services/service-a
+  user-service:
+    build: .
+    command: uvicorn services.user.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
-    environment:
-      SERVICE_NAME: service-a
-      PORT: "8000"
-    restart: unless-stopped
+      - "8001:8000"
 
-  service-b:
-    build:
-      context: ./services/service-b
+  payment-service:
+    build: .
+    command: uvicorn services.payment.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8001:8001"
+      - "8003:8000"
+
+  order-service:
+    build: .
+    command: uvicorn services.order.main:app --host 0.0.0.0 --port 8000
     environment:
-      SERVICE_NAME: service-b
-      PORT: "8001"
-    restart: unless-stopped
+      USER_SERVICE_URL: http://user-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+    ports:
+      - "8002:8000"
+    depends_on:
+      - user-service
+      - payment-service
