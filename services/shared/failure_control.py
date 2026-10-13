@@ -34,7 +34,11 @@ class FailureController:
         return self.configuration
 
     async def intercept(self, request: Request, call_next: ASGIApp):
-        if request.url.path.startswith("/admin/failure") or not self.configuration.enabled:
+        if (
+            request.url.path.startswith("/admin/failure")
+            or request.url.path == "/metrics"
+            or not self.configuration.enabled
+        ):
             return await call_next(request)
 
         if self.configuration.mode is FailureMode.slow:
