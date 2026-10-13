@@ -390,7 +390,6 @@ ai-based-self-healing/
 - Phase 2 provides metrics and dashboards but does not yet include distributed tracing, a digital twin, anomaly detection, AI-based analysis, a recovery orchestrator, or an automated recovery controller.
 - Docker-based end-to-end validation was not available in the development environment because the Docker daemon was not running; local in-process smoke checks and configuration parsing passed.
 - No automated test suite is currently included.
-- No automated test suite is currently included.
 
 ## Roadmap
 
