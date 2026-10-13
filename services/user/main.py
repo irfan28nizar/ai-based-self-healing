@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from services.shared.failure_control import FailureConfiguration, FailureController
+from services.shared.observability import instrument_requests, metrics_response
 
 app = FastAPI(title="User Service", version="0.1.0")
 failure_controller = FailureController("user-service")
@@ -23,9 +24,17 @@ async def inject_failure(request: Request, call_next):
     return await failure_controller.intercept(request, call_next)
 
 
+app.middleware("http")(instrument_requests("user-service"))
+
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"service": "user-service", "status": "healthy"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    return metrics_response()
 
 
 @app.get("/users/{user_id}", response_model=User)
