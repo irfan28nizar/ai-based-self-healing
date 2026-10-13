@@ -6,15 +6,16 @@ This README is the primary project guide. It describes the running Phase 1 imple
 
 ## Project status
 
-**Phase 1 is implemented.** It provides a containerized User, Order, and Payment application with service-to-service requests, basic health endpoints, and development-only failure injection.
+**Phases 1 and 2 are implemented.** Phase 1 provides the User, Order, and Payment services with health endpoints and development-only failure injection. Phase 2 adds Prometheus metrics, scraping, and a provisioned Grafana dashboard.
 
-Prometheus/Grafana observability, the digital twin, anomaly and root-cause analysis, AI-based recovery selection, and automated recovery are not implemented yet.
+The digital twin, anomaly and root-cause analysis, AI-based recovery selection, and automated recovery remain planned for later phases.
 
 ## Contents
 
 - [Goals and scope](#goals-and-scope)
 - [System design](#system-design)
 - [Phase 1 architecture](#phase-1-architecture)
+- [Phase 2 observability](#phase-2-observability)
 - [Technology stack and dependencies](#technology-stack-and-dependencies)
 - [Requirements](#requirements)
 - [Run the application](#run-the-application)
@@ -69,7 +70,7 @@ flowchart TD
     Verify --> Twin
 ```
 
-This is the planned design, not the current implementation. Phase 1 does not contain a digital twin or automated recovery engine.
+Phases 3–8 in this diagram are planned. The current implementation covers the Phase 1 services and Phase 2 metrics collection and dashboards; it does not yet contain a digital twin or automated recovery engine.
 
 ### Component responsibilities
 
@@ -79,7 +80,10 @@ This is the planned design, not the current implementation. Phase 1 does not con
 | Order Service | Validates the requested user, calls Payment, and returns a confirmed order response. |
 | Payment Service | Simulates payment authorization and returns a transaction identifier. |
 | Shared failure controller | Deliberately injects unavailable, server-error, or slow responses for local demonstrations. |
-| Docker Compose | Builds and starts each service as an independent container. |
+| Shared observability middleware | Records request counts, latency, in-progress requests, and business outcomes with bounded labels. |
+| Prometheus | Scrapes and retains service metrics for seven days. |
+| Grafana | Provides a provisioned dashboard for request health, latency, business outcomes, and scrape status. |
+| Docker Compose | Builds and starts the services, Prometheus, and Grafana on a shared network. |
 
 ## Phase 1 architecture
 
@@ -111,9 +115,38 @@ This is the planned design, not the current implementation. Phase 1 does not con
 
 ### Failure controller
 
-Each service has a local failure controller. When enabled, it intercepts application requests and can return HTTP 503, return HTTP 500, or delay the request. The `/admin/failure` control routes remain available while a failure is enabled so it can be turned off again.
+Each service has a local failure controller. When enabled, it intercepts application requests and can return HTTP 503, return HTTP 500, or delay the request. The `/admin/failure` control routes remain available while a failure is enabled so it can be turned off again. The `/metrics` endpoint also remains available so Prometheus can observe injected failures.
 
 The health routes pass through this middleware. They return a simple service response when no failure is active; they are not a complete dependency-aware readiness check.
+
+## Phase 2 observability
+
+### Metrics
+
+Each service exposes `GET /metrics` in Prometheus text format. The shared middleware records:
+
+- Request totals by service, method, route template, and status code.
+- Request duration histograms and the number of in-progress requests.
+- Order outcomes (`confirmed`, `user_not_found`, dependency errors, and unavailable dependencies).
+- Successful payment authorizations.
+
+Route templates keep metric labels bounded; user IDs, order IDs, and other per-request values are not used as labels. The failure controller bypasses `/metrics`, so injected application failures remain observable.
+
+### Prometheus and Grafana
+
+Prometheus scrapes the User, Order, and Payment services every five seconds and retains metrics for seven days. Its configuration is in `monitoring/prometheus.yml`.
+
+Grafana automatically provisions the Prometheus data source and the **Self-Healing Demo Overview** dashboard. The dashboard includes request rate, server error rate, p95 latency, order/payment outcomes, and target scrape health.
+
+Run the full stack from the project root:
+
+```bash
+docker compose up --build
+```
+
+Open Grafana at <http://localhost:3000> with the local demo credentials `admin` / `admin`, then create a few orders to populate the dashboard. Prometheus is at <http://localhost:9090>. Stop the stack with `docker compose down`; named volumes preserve Prometheus and Grafana data.
+
+Docker-based end-to-end validation remains pending because the Docker daemon was unavailable in the development environment. Compose configuration parsing, monitoring configuration parsing, dashboard JSON parsing, Python compilation, and local in-process service smoke checks passed.
 
 ## Technology stack and dependencies
 
@@ -124,6 +157,9 @@ The health routes pass through this middleware. They return a simple service res
 | Pydantic | Request and response models; installed as a FastAPI dependency. |
 | Uvicorn | `0.35.0` with standard extras, ASGI server for each service. |
 | HTTPX | `0.28.1`, asynchronous HTTP client used by Order to call User and Payment. |
+| prometheus-client | `0.22.1`, exports Prometheus metrics from each service. |
+| Prometheus | `2.54.1`, scrapes metrics every five seconds and retains seven days of data. |
+| Grafana | `11.2.0`, provisions the Prometheus data source and overview dashboard. |
 | Docker | Packages each service into a container. |
 | Docker Compose | Builds, networks, configures, and starts the local service stack. |
 
@@ -131,13 +167,13 @@ The pinned Python dependencies are listed in [`requirements.txt`](requirements.t
 
 ### Planned dependencies and tools
 
-These are the proposed additions for later phases; they are not installed in the Phase 1 environment yet. Versions will be pinned when each phase is implemented and validated.
+The Phase 2 observability dependencies below are implemented and version-pinned. Remaining rows describe future candidates, not installed dependencies.
 
 | Phase | Planned dependency / tool | Purpose |
 | --- | --- | --- |
-| 2 | `prometheus-client` and Prometheus | Expose and scrape application metrics. |
-| 2 | Grafana | Build dashboards for service health, latency, errors, and recovery results. |
-| 2 | OpenTelemetry Python SDK and OTLP exporter (optional) | Add consistent traces and telemetry correlation across service calls. |
+| 2 | `prometheus-client` and Prometheus | Implemented: expose and scrape application metrics. |
+| 2 | Grafana | Implemented: dashboards for service health, latency, errors, and business outcomes. |
+| Future | OpenTelemetry Python SDK and OTLP exporter (optional) | Add consistent traces and telemetry correlation across service calls. |
 | 3 | PostgreSQL with a Python database driver | Persist digital-twin state and service/dependency history. The schema and ORM choice remain open. |
 | 4 | `scikit-learn` (candidate) | Establish a baseline for statistical anomaly detection before evaluating more complex models. |
 | 5 | AI model/provider integration (to be selected) | Analyze failure context and recommend recovery actions. Provider selection should follow an evaluation of quality, latency, cost, and deployment constraints. |
@@ -166,7 +202,9 @@ The interactive API documentation for each service is available at:
 - Order: <http://localhost:8002/docs>
 - Payment: <http://localhost:8003/docs>
 
-Each OpenAPI schema is also available at `/openapi.json` on its service port. Stop the containers with `Ctrl+C`, then remove them with:
+Prometheus is available at <http://localhost:9090>. Grafana is available at <http://localhost:3000>; sign in with `admin` / `admin` for this local demo and open the provisioned **Self-Healing Demo Overview** dashboard. Change the demo password before exposing Grafana outside your local machine.
+
+Each service exposes Prometheus metrics at `/metrics`. The endpoint remains available while failures are injected. Each OpenAPI schema is also available at `/openapi.json` on its service port. Stop the containers with `Ctrl+C`, then remove them with:
 
 ```bash
 docker compose down
@@ -181,6 +219,7 @@ To rebuild after changing application code, run `docker compose up --build` agai
 | Method and path | Behavior |
 | --- | --- |
 | `GET /health` | Returns the service name and `healthy` status when not being fault-injected. |
+| `GET /metrics` | Exposes Prometheus request and latency metrics. |
 | `GET /users/{user_id}` | Returns a seeded user or HTTP 404 if the id is unknown. |
 | `GET /admin/failure` | Returns the active failure-injection configuration. |
 | `POST /admin/failure` | Sets the failure-injection configuration. |
@@ -192,6 +231,7 @@ Seeded ids are `user-1` and `user-2`.
 | Method and path | Behavior |
 | --- | --- |
 | `GET /health` | Returns the service name and `healthy` status when not being fault-injected. |
+| `GET /metrics` | Exposes Prometheus request, latency, and order-outcome metrics. |
 | `POST /orders` | Validates the user and requests payment authorization. Returns HTTP 201 on success. |
 | `GET /admin/failure` | Returns the active failure-injection configuration. |
 | `POST /admin/failure` | Sets the failure-injection configuration. |
@@ -213,6 +253,7 @@ The item must contain 1–120 characters, and amount must be greater than zero.
 | Method and path | Behavior |
 | --- | --- |
 | `GET /health` | Returns the service name and `healthy` status when not being fault-injected. |
+| `GET /metrics` | Exposes Prometheus request, latency, and payment-outcome metrics. |
 | `POST /payments` | Simulates authorization and returns HTTP 201 with a transaction id. |
 | `GET /admin/failure` | Returns the active failure-injection configuration. |
 | `POST /admin/failure` | Sets the failure-injection configuration. |
@@ -315,6 +356,11 @@ ai-based-self-healing/
 ├── README.md
 ├── docker-compose.yml
 ├── requirements.txt
+├── monitoring/
+│   ├── prometheus.yml
+│   └── grafana/
+│       ├── dashboards/
+│       └── provisioning/
 └── services/
     ├── order/
     │   └── main.py
@@ -331,6 +377,7 @@ ai-based-self-healing/
 - The user records are sample data. Do not add real personal information.
 - Payment authorization is simulated. No real payment provider is contacted.
 - The `/admin/failure` endpoints have no authentication; keep them on a local development network.
+- Grafana uses the local demo credentials `admin` / `admin`; change them before exposing Grafana beyond the local development environment.
 - The services currently have no database, authentication, authorization, TLS setup, or production secret management.
 - The containers are a development setup and should receive security hardening before deployment.
 
@@ -339,14 +386,16 @@ ai-based-self-healing/
 - User data and service state are held in process memory; generated orders and payments are not persisted.
 - The Payment Service always simulates authorization; it does not validate a payment method or contact a provider.
 - Order uses synchronous dependency sequencing inside one request and has a fixed five-second outbound timeout.
-- Health endpoints are simple responses and do not check downstream dependencies or external telemetry.
-- There is no metrics pipeline, distributed tracing, digital twin, anomaly detection, AI engine, recovery orchestrator, or automated recovery controller in Phase 1.
+- Health endpoints are simple responses and do not check downstream dependencies.
+- Phase 2 provides metrics and dashboards but does not yet include distributed tracing, a digital twin, anomaly detection, AI-based analysis, a recovery orchestrator, or an automated recovery controller.
+- Docker-based end-to-end validation was not available in the development environment because the Docker daemon was not running; local in-process smoke checks and configuration parsing passed.
+- No automated test suite is currently included.
 - No automated test suite is currently included.
 
 ## Roadmap
 
-1. **Phase 1 — Core architecture and initial microservices:** implemented in this repository.
-2. **Phase 2 — Observability and health monitoring:** add Prometheus metrics and Grafana dashboards, plus useful health and dependency signals.
+1. **Phase 1 — Core architecture and initial microservices:** implemented.
+2. **Phase 2 — Observability and health monitoring:** implemented. Services expose request, latency, and business metrics; Prometheus scrapes all three services; Grafana provides the provisioned overview dashboard. Container-level runtime validation remains pending because Docker was unavailable in the development environment.
 3. **Phase 3 — Digital Twin state model:** define the service, dependency, and runtime state representation and keep it synchronized with observations.
 4. **Phase 4 — Failure and anomaly detection:** identify unhealthy and abnormal service behavior from telemetry.
 5. **Phase 5 — AI Engine:** analyze state and recommend an appropriate recovery action with a reason.
