@@ -1,0 +1,96 @@
+services:
+  user-service:
+    build: .
+    command: uvicorn services.user.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8001:8000"
+
+  payment-service:
+    build: .
+    command: uvicorn services.payment.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8003:8000"
+
+  order-service:
+    build: .
+    command: uvicorn services.order.main:app --host 0.0.0.0 --port 8000
+    environment:
+      USER_SERVICE_URL: http://user-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+    ports:
+      - "8002:8000"
+    depends_on:
+      - user-service
+      - payment-service
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - user-service
+      - order-service
+      - payment-service
+
+  anomaly-detector:
+    build: .
+    command: uvicorn services.anomaly_detector.main:app --host 0.0.0.0 --port 8000
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      EVALUATION_INTERVAL_SECONDS: 10
+      PROMETHEUS_TIMEOUT_SECONDS: 3
+      ALERT_FOR_SECONDS: 20
+      RECOVERY_FOR_SECONDS: 30
+      ERROR_RATIO_THRESHOLD: 0.25
+      ERROR_MIN_REQUESTS: 3
+      LATENCY_P95_THRESHOLD_SECONDS: 1.0
+      DEPENDENCY_ERROR_MIN_EVENTS: 2
+    ports:
+      - "8004:8000"
+    depends_on:
+      - prometheus
+
+  root-cause-analyzer:
+    build: .
+    command: uvicorn services.root_cause_analyzer.main:app --host 0.0.0.0 --port 8000
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      DETECTOR_URL: http://anomaly-detector:8000
+      RCA_EVALUATION_INTERVAL_SECONDS: 10
+      RCA_REQUEST_TIMEOUT_SECONDS: 3
+      RCA_WINDOW: 2m
+      RCA_MIN_DEPENDENCY_FAILURES: 2
+      RCA_MIN_DEPENDENCY_REQUESTS: 2
+      RCA_DEPENDENCY_FAILURE_RATIO: 0.5
+      RCA_DEPENDENCY_P95_THRESHOLD_SECONDS: 1.0
+    ports:
+      - "8005:8000"
+    depends_on:
+      - prometheus
+      - anomaly-detector
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
