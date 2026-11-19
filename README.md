@@ -1,6 +1,6 @@
 # AI-Based Self-Healing System
 
-The project includes the Phase 1 microservices, Phase 2 observability stack, a Phase 3 rule-based anomaly detector, and a Phase 4 root-cause analyzer. Prometheus collects service, business, and dependency-call metrics; Grafana displays service health, anomalies, and bounded diagnosis signals. The analyzer ranks evidence-backed hypotheses for human review. Automated recovery remains a later phase.
+The project includes the Phase 1 microservices, Phase 2 observability stack, a Phase 3 rule-based anomaly detector, a Phase 4 root-cause analyzer, and a Phase 5 guarded recovery controller. Prometheus collects service, business, and dependency-call metrics; Grafana displays service health, anomalies, and bounded diagnosis signals. The analyzer ranks evidence-backed hypotheses; the controller turns only high-confidence diagnoses into allowlisted, human-approved recovery actions.
 
 ## Services and dashboards
 
@@ -13,10 +13,11 @@ The project includes the Phase 1 microservices, Phase 2 observability stack, a P
 | Grafana | `http://localhost:3000` | Displays the provisioned overview dashboard. |
 | Anomaly detector | `http://localhost:8004` | Evaluates Prometheus signals and reports active anomalies. |
 | Root-cause analyzer | `http://localhost:8005` | Ranks likely causes for active anomalies and reports supporting evidence. |
+| Recovery controller | `http://localhost:8006` | Proposes and (when approved) executes allowlisted recovery actions. |
 
 The API documentation is available at `/docs` on each service. Each service exposes Prometheus metrics at `/metrics`; the metrics endpoint stays available while application failures are injected. The detector exposes `/health`, `/anomalies`, and `/metrics`. It polls Prometheus every 10 seconds, requires a signal to persist for 20 seconds before opening an anomaly, and waits 30 seconds of normal behavior before resolving it. Active state is held in memory and clears if the detector restarts.
 
-Phase 4 implementation details and acceptance criteria are documented in [PHASE4_PLAN.md](PHASE4_PLAN.md).
+Phase 4 implementation details and acceptance criteria are documented in [PHASE4_PLAN.md](PHASE4_PLAN.md). Phase 5 details are in [PHASE5_PLAN.md](PHASE5_PLAN.md).
 
 ## Start the stack
 
@@ -130,3 +131,63 @@ Metric labels use route templates rather than user-supplied IDs to keep metric s
 Order-service dependency telemetry uses `dependency_requests_total{caller,dependency,operation,outcome}` and `dependency_request_duration_seconds`. Labels are fixed service and operation names with outcomes `success`, `http_error`, `timeout`, or `connection_error`. An expected user lookup `404` is treated as a normal dependency response. No user, order, or transaction identifiers are added to metrics. Grafana shows bounded cause/confidence and numeric evidence signals; use `http://localhost:8005/diagnoses` for explanations and PromQL details.
 
 Diagnosis is based on aggregate metrics and temporal correlation. It cannot prove that a dependency caused a particular request failure, and no-traffic or missing telemetry yields insufficient evidence. The analyzer does not trigger restarts or other recovery actions.
+
+## Phase 5 — Recovery controller
+
+The recovery controller (`http://localhost:8006`) watches the analyzer's `/diagnoses` output every 15 seconds and creates a **proposal** when a high-confidence diagnosis maps to an allowlisted action. It starts in **dry-run mode** (`RC_DRY_RUN=true`) — proposals appear in the API but no action is ever taken until dry-run is explicitly disabled.
+
+### Safety gates
+
+| Gate | Behaviour |
+| --- | --- |
+| Dry-run mode | `RC_DRY_RUN=true` (default). Proposals are created with status `dry_run`; nothing is executed. Set `false` to enable execution. |
+| Kill switch | `RC_KILL_SWITCH=true` stops all proposal creation and execution immediately without a restart. |
+| Confidence allowlist | Only `high` confidence diagnoses trigger proposals by default (`RC_ALLOWED_CONFIDENCE=high`). |
+| Human approval | Every proposal requires an explicit `POST /proposals/{id}/approve` call before execution. |
+| Proposal expiry | Approvals are bound to the proposal ID and expire after `RC_APPROVAL_EXPIRY_SECONDS` (default 120 s). |
+| Cooldown | `RC_COOLDOWN_SECONDS` (default 300 s) must elapse between repeated actions for the same service. |
+| Deduplication | A new proposal is not created while another is pending, approved, or executing for the same action. |
+
+### Allowlisted actions
+
+The only actions the controller can execute are calls to the existing development failure-control endpoints:
+
+| Action ID | Target | What it does |
+| --- | --- | --- |
+| `clear_payment_failure` | payment-service | `POST /admin/failure {"enabled": false}` |
+| `clear_user_failure` | user-service | `POST /admin/failure {"enabled": false}` |
+| `clear_order_failure` | order-service | `POST /admin/failure {"enabled": false}` |
+
+No Docker socket access, no shell commands, no credentials in config.
+
+### Proposal → approve → verify workflow
+
+```bash
+# 1. Inject a payment failure and generate traffic
+curl -X POST http://localhost:8003/admin/failure \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"mode":"unavailable"}'
+
+# 2. After ~30 s, check for a proposal (dry_run=true by default)
+curl http://localhost:8006/proposals
+
+# 3. To execute: set RC_DRY_RUN=false in docker-compose.yml and restart
+#    the recovery-controller, then approve the pending proposal:
+curl -X POST http://localhost:8006/proposals/{proposal_id}/approve
+
+# 4. Inspect the audit trail
+curl http://localhost:8006/audit
+```
+
+After the action is called, the controller polls Prometheus for `up{job="payment-service"} == 1` for up to `RC_VERIFY_WINDOW_SECONDS` (default 60 s). It reports `succeeded`, `failed`, or `unknown`; it never claims success on the HTTP call result alone.
+
+### Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/health` | `200` if healthy, `503` if analyzer unreachable |
+| `GET` | `/proposals` | All proposals with their current status |
+| `GET` | `/proposals/{id}` | Single proposal detail |
+| `POST` | `/proposals/{id}/approve` | Approve a pending proposal (must be within expiry window) |
+| `GET` | `/audit` | Full audit log (last 200 records) |
+| `GET` | `/metrics` | Prometheus metrics |

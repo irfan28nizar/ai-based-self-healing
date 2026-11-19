@@ -27,3 +27,8 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: [root-cause-analyzer:8000]
+
+  - job_name: recovery-controller
+    metrics_path: /metrics
+    static_configs:
+      - targets: [recovery-controller:8000]

@@ -76,6 +76,30 @@ services:
       - prometheus
       - anomaly-detector
 
+  recovery-controller:
+    build: .
+    command: uvicorn services.recovery_controller.main:app --host 0.0.0.0 --port 8000
+    environment:
+      ANALYZER_URL: http://root-cause-analyzer:8000
+      PROMETHEUS_URL: http://prometheus:9090
+      USER_SERVICE_URL: http://user-service:8000
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+      ORDER_SERVICE_URL: http://order-service:8000
+      RC_DRY_RUN: "true"
+      RC_KILL_SWITCH: "false"
+      RC_EVALUATION_INTERVAL_SECONDS: "15"
+      RC_REQUEST_TIMEOUT_SECONDS: "3"
+      RC_APPROVAL_EXPIRY_SECONDS: "120"
+      RC_COOLDOWN_SECONDS: "300"
+      RC_ALLOWED_CONFIDENCE: "high"
+      RC_VERIFY_WINDOW_SECONDS: "60"
+      RC_VERIFY_POLL_SECONDS: "5"
+    ports:
+      - "8006:8000"
+    depends_on:
+      - root-cause-analyzer
+      - prometheus
+
   grafana:
     image: grafana/grafana:11.2.0
     environment:
